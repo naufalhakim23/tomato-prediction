@@ -7,6 +7,9 @@ const pool = require("./src/db/db");
 const db = require("./src/firebase/Firebase");
 const uuid = require("uuid").v4;
 
+//tensorflow
+const tf = require("@tensorflow/tfjs-node");
+
 //middleware
 app.use(cors());
 app.use(express.json());
@@ -32,6 +35,34 @@ reference.on("value", (snapshot) => {
         throw error;
       }
       console.log("Data added to database");
+    }
+  );
+  // Deploying json machine learning model fetching data from postgresql database
+  const model = tf.loadLayersModel("file://src/tfjs/model.json");
+  pool.query(
+    `SELECT * FROM tomatomodel.datafromfirebase ORDER BY timeadded DESC LIMIT 1`,
+    (error, results) => {
+      if (error) {
+        throw error;
+      }
+      const { percentageSoilSensor2, roomHumidity, roomTemperature } =
+        results.rows[0];
+      const dataPredicted = tf.tensor([
+        [percentageSoilSensor2, roomHumidity, roomTemperature],
+      ]);
+      const prediction = model.predict(dataPredicted);
+      const predictionData = prediction.dataSync();
+      console.log(predictionData);
+      pool.query(
+        `INSERT INTO tomatomodel.prediction ("statusPrediction", "timeAdded") VALUES ($1, $2)`,
+        [predictionData, new Date()],
+        (error, results) => {
+          if (error) {
+            throw error;
+          }
+          console.log("Prediction added to database");
+        }
+      );
     }
   );
 });
