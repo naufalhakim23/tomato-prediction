@@ -8,8 +8,8 @@ const db = require("./src/firebase/Firebase");
 const uuid = require("uuid").v4;
 
 //tensorflow
-const tf = require("@tensorflow/tfjs-node");
-
+const tf = require("@tensorflow/tfjs");
+const tfn = require("@tensorflow/tfjs-node");
 //middleware
 app.use(cors());
 app.use(express.json());
@@ -38,35 +38,71 @@ reference.on("value", (snapshot) => {
     }
   );
   // Deploying json machine learning model fetching data from postgresql database
-  const model = tf.loadLayersModel("file://src/tfjs/model.json");
+  // predicting data from tensorflow model
+  const handler = tfn.io.fileSystem("./src/tfjs/model.json");
+  const model = tf.loadGraphModel(handler);
   pool.query(
-    `SELECT * FROM tomatomodel.datafromfirebase ORDER BY timeadded DESC LIMIT 1`,
+    `SELECT * FROM tomatomodel.datafromfirebase ORDER BY "timeAdded" DESC LIMIT 1`,
     (error, results) => {
       if (error) {
         throw error;
       }
+      //Getting data from database
       const { percentageSoilSensor2, roomHumidity, roomTemperature } =
         results.rows[0];
-      const dataPredicted = tf.tensor([
-        [percentageSoilSensor2, roomHumidity, roomTemperature],
-      ]);
-      const prediction = model.predict(dataPredicted);
-      const predictionData = prediction.dataSync();
-      console.log(predictionData);
-      pool.query(
-        `INSERT INTO tomatomodel.prediction ("statusPrediction", "timeAdded") VALUES ($1, $2)`,
-        [predictionData, new Date()],
-        (error, results) => {
-          if (error) {
-            throw error;
-          }
-          console.log("Prediction added to database");
+      //converting data to tensor
+      let dataConversionTensor = {
+        percentagesoilsensor2: tf.tensor([[parseFloat(percentageSoilSensor2)]]),
+        roomhumidity: tf.tensor([[parseFloat(roomHumidity)]]),
+        roomtemperature: tf.tensor([[parseFloat(roomTemperature)]]),
+      };
+      //predicting data
+      const prediction = model.then(
+        (res) => {
+          const resPred = res.predict(dataConversionTensor);
+          const data = resPred.dataSync();
+          return data;
+        },
+        (err) => {
+          console.log(err);
         }
       );
+      const viewDataAsync = async () => {
+        try {
+          const dataPrediction = await prediction;
+          return dataPrediction[0];
+        } catch (err) {
+          console.log(err);
+        }
+      };
+      //Getting prediction from tensorflow model and sending it to postgresql database
+      const predictionTensorflow = viewDataAsync().then((res) => {
+        const predictionRoundedMath = Math.round(res);
+        pool.query(
+          `INSERT INTO tomatomodel.datafromfirebase ("id", "percentageSoilSensor2", "roomHumidity", "roomTemperature", "status", "statusPrediction", "timeAdded", "percentagePrediction") VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [
+            uuid(),
+            percentageSoilSensor2,
+            roomHumidity,
+            roomTemperature,
+            status,
+            predictionRoundedMath,
+            new Date(),
+            res,
+          ],
+          (error, results) => {
+            if (error) {
+              throw error;
+            }
+            console.log("Prediction & Data added to database");
+          }
+        );
+      });
+      predictionTensorflow;
     }
   );
 });
-
+//listening to port
 app.listen(port, () => {
   console.log("Server is running on port " + port);
 });
